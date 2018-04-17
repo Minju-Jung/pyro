@@ -12,13 +12,13 @@ from utils import get_data
 def model(K, alpha0, y):
     theta = pyro.sample("theta", dist.Dirichlet(alpha0 * torch.ones(K)))
     mu = pyro.sample("mu", dist.Normal(torch.zeros(K, y.shape[-1]),
-                                       10. * torch.ones(K, y.shape[-1])).reshape(extra_event_dims=1))
+                                       10. * torch.ones(K, y.shape[-1])).independent(1))
     sigma = pyro.sample("sigma", dist.LogNormal(torch.ones(K, y.shape[-1]),
-                                                torch.ones(K, y.shape[-1])).reshape(extra_event_dims=1))
+                                                torch.ones(K, y.shape[-1])).independent(1))
 
     with pyro.iarange('data', len(y)):
         assign = pyro.sample('mixture', dist.Categorical(theta.unsqueeze(0).expand(len(y), K)))
-        obs_dist = dist.Normal(mu[assign], sigma[assign]).reshape(extra_event_dims=1)
+        obs_dist = dist.Normal(mu[assign], sigma[assign]).independent(1)
         pyro.sample('obs', obs_dist, obs=y[assign])
 
 

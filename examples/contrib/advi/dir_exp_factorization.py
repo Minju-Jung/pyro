@@ -10,11 +10,11 @@ from utils import get_data
 
 def model(K, U, I, c, y):
     assert y.shape == (U, I)
-    theta = pyro.sample("theta", dist.Dirichlet(1000. * torch.ones(K, U)).reshape(extra_event_dims=1))
-    beta = pyro.sample("beta", dist.Exponential(c * torch.ones(K, I)).reshape(extra_event_dims=1))
+    theta = pyro.sample("theta", dist.Dirichlet(1000. * torch.ones(K, U)).independent(1))
+    beta = pyro.sample("beta", dist.Exponential(c * torch.ones(K, I)).independent(1))
     with pyro.iarange('data', len(y)):
         pyro.sample('obs', dist.Poisson(torch.exp(torch.mm(theta.t(), beta)))
-                    .reshape(extra_event_dims=1), obs=y)
+                    .independent(1), obs=y.float())
 
 
 def main(args):
