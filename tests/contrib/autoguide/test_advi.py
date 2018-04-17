@@ -8,7 +8,7 @@ import pyro
 import pyro.distributions as dist
 import pyro.poutine as poutine
 from pyro.contrib.autoguide import ADVIDiagonalNormal, ADVIDiscreteParallel, ADVIMaster, ADVIMultivariateNormal
-from pyro.infer import ELBO, SVI
+from pyro.infer import SVI, Trace_ELBO, TraceEnum_ELBO, TraceGraph_ELBO
 from pyro.optim import Adam
 from tests.common import assert_equal
 
@@ -25,54 +25,54 @@ def test_scores(advi_class):
     guide_trace.compute_log_prob()
     model_trace.compute_log_prob()
 
-    assert model_trace.nodes['_advi_latent']['log_prob_sum'].item() == 0.0
+    assert '_advi_latent' not in model_trace.nodes
     assert model_trace.nodes['z']['log_prob_sum'].item() != 0.0
     assert guide_trace.nodes['_advi_latent']['log_prob_sum'].item() != 0.0
     assert guide_trace.nodes['z']['log_prob_sum'].item() == 0.0
 
 
-@pytest.mark.parametrize("trace_graph,enum_discrete",
-                         [(False, False), (True, False), (False, True)],
-                         ids=["Trace", "TraceGraph", "TraceEnum"])
+@pytest.mark.parametrize("Elbo", [Trace_ELBO, TraceGraph_ELBO, TraceEnum_ELBO])
 @pytest.mark.parametrize("advi_class", [ADVIMultivariateNormal, ADVIDiagonalNormal])
-def test_shapes(advi_class, trace_graph, enum_discrete):
+def test_shapes(advi_class, Elbo):
 
     def model():
         pyro.sample("z1", dist.Normal(0.0, 1.0))
-        pyro.sample("z2", dist.Normal(torch.zeros(2), torch.ones(2)).reshape(extra_event_dims=1))
+        pyro.sample("z2", dist.Normal(torch.zeros(2), torch.ones(2)).independent(1))
         with pyro.iarange("iarange", 3):
             pyro.sample("z3", dist.Normal(torch.zeros(3), torch.ones(3)))
 
     advi = advi_class(model)
-    elbo = ELBO.make(trace_graph=trace_graph, enum_discrete=enum_discrete)
+    elbo = Elbo()
     loss = elbo.loss(advi.model, advi.guide)
     assert np.isfinite(loss), loss
 
 
 @pytest.mark.xfail(reason="irange is not yet supported")
 @pytest.mark.parametrize('advi_class', [ADVIDiagonalNormal, ADVIMultivariateNormal])
-def test_irange_smoke(advi_class):
+@pytest.mark.parametrize("Elbo", [Trace_ELBO, TraceGraph_ELBO])
+def test_irange_smoke(advi_class, Elbo):
 
     def model():
         x = pyro.sample("x", dist.Normal(0, 1))
         assert x.shape == ()
 
         for i in pyro.irange("irange", 3):
-            y = pyro.sample("y_{}".format(i), dist.Normal(0, 1).reshape([2, 1 + i, 2], extra_event_dims=3))
+            y = pyro.sample("y_{}".format(i), dist.Normal(0, 1).expand_by([2, 1 + i, 2]).independent(3))
             assert y.shape == (2, 1 + i, 2)
 
-        z = pyro.sample("z", dist.Normal(0, 1).reshape([2], extra_event_dims=1))
+        z = pyro.sample("z", dist.Normal(0, 1).expand_by([2]).independent(1))
         assert z.shape == (2,)
 
         pyro.sample("obs", dist.Bernoulli(0.1), obs=torch.tensor(0))
 
     advi = advi_class(model)
-    infer = SVI(advi.model, advi.guide, Adam({"lr": 1e-6}), "ELBO")
+    infer = SVI(advi.model, advi.guide, Adam({"lr": 1e-6}), Elbo())
     infer.step()
 
 
 @pytest.mark.parametrize("advi_class", [ADVIMultivariateNormal, ADVIDiagonalNormal])
-def test_median(advi_class):
+@pytest.mark.parametrize("Elbo", [Trace_ELBO, TraceGraph_ELBO])
+def test_median(advi_class, Elbo):
 
     def model():
         pyro.sample("x", dist.Normal(0.0, 1.0))
@@ -80,7 +80,7 @@ def test_median(advi_class):
         pyro.sample("z", dist.Beta(2.0, 2.0))
 
     advi = advi_class(model)
-    infer = SVI(advi.model, advi.guide, Adam({'lr': 0.01}), 'ELBO')
+    infer = SVI(advi.model, advi.guide, Adam({'lr': 0.01}), Elbo())
     for _ in range(100):
         infer.step()
 
@@ -91,7 +91,8 @@ def test_median(advi_class):
 
 
 @pytest.mark.parametrize("advi_class", [ADVIMultivariateNormal, ADVIDiagonalNormal])
-def test_quantiles(advi_class):
+@pytest.mark.parametrize("Elbo", [Trace_ELBO, TraceGraph_ELBO])
+def test_quantiles(advi_class, Elbo):
 
     def model():
         pyro.sample("x", dist.Normal(0.0, 1.0))
@@ -99,7 +100,7 @@ def test_quantiles(advi_class):
         pyro.sample("z", dist.Beta(2.0, 2.0))
 
     advi = advi_class(model)
-    infer = SVI(advi.model, advi.guide, Adam({'lr': 0.01}), 'ELBO')
+    infer = SVI(advi.model, advi.guide, Adam({'lr': 0.01}), Elbo())
     for _ in range(100):
         infer.step()
 
@@ -107,18 +108,19 @@ def test_quantiles(advi_class):
     median = advi.median()
     for name in ["x", "y", "z"]:
         assert_equal(median[name], quantiles[name][1])
+    quantiles = {name: [v.item() for v in value] for name, value in quantiles.items()}
 
-    assert torch.tensor(-3.0) < quantiles["x"][0]
+    assert -3.0 < quantiles["x"][0]
     assert quantiles["x"][0] + 1.0 < quantiles["x"][1]
     assert quantiles["x"][1] + 1.0 < quantiles["x"][2]
     assert quantiles["x"][2] < 3.0
 
-    assert torch.tensor(0.01) < quantiles["y"][0]
+    assert 0.01 < quantiles["y"][0]
     assert quantiles["y"][0] * 2.0 < quantiles["y"][1]
     assert quantiles["y"][1] * 2.0 < quantiles["y"][2]
     assert quantiles["y"][2] < 100.0
 
-    assert torch.tensor(0.01) < quantiles["z"][0]
+    assert 0.01 < quantiles["z"][0]
     assert quantiles["z"][0] + 0.1 < quantiles["z"][1]
     assert quantiles["z"][1] + 0.1 < quantiles["z"][2]
     assert quantiles["z"][2] < 0.99
@@ -131,7 +133,7 @@ def test_discrete_parallel(continuous_class):
 
     def model(data):
         weights = pyro.sample('weights', dist.Dirichlet(0.5 * torch.ones(K)))
-        locs = pyro.sample('locs', dist.Normal(0, 10).reshape([K], extra_event_dims=1))
+        locs = pyro.sample('locs', dist.Normal(0, 10).expand_by([K]).independent(1))
         scale = pyro.sample('scale', dist.LogNormal(0, 1))
 
         with pyro.iarange('data', len(data)):
@@ -143,6 +145,6 @@ def test_discrete_parallel(continuous_class):
     advi.add(continuous_class(poutine.block(model, hide=["assignment"])))
     advi.add(ADVIDiscreteParallel(poutine.block(model, expose=["assignment"])))
 
-    elbo = ELBO.make(enum_discrete=True, max_iarange_nesting=1)
+    elbo = TraceEnum_ELBO(max_iarange_nesting=1)
     loss = elbo.loss_and_grads(advi.model, advi.guide, data)
     assert np.isfinite(loss), loss
