@@ -3,8 +3,8 @@ import pyro
 import pyro.distributions as dist
 from pyro.infer import SVI
 from pyro import poutine
-from pyro.contrib.autoguide import (ADVIDiagonalNormal, ADVIDiscreteParallel,  # noqa: F401
-                                    ADVIMaster, ADVIMultivariateNormal)
+from pyro.contrib.autoguide import (AutoDiagonalNormal, AutoMultivariateNormal,
+                                    AutoDiscreteParallel, AutoGuideList)
 import pyro.optim as optim
 from utils import get_data
 
@@ -23,17 +23,17 @@ def model(K, alpha0, y):
 
 
 def main(args):
-    advi = ADVIMaster(model)
-    advi.add(ADVIDiagonalNormal(poutine.block(model, hide=["mixture"]))),
-    advi.add(ADVIDiscreteParallel(poutine.block(model, expose=["mixture"])))
+    guide = AutoGuideList(model)
+    guide.add(AutoDiagonalNormal(poutine.block(model, hide=["mixture"]))),
+    guide.add(AutoDiscreteParallel(poutine.block(model, expose=["mixture"])))
 
     adam = optim.Adam({'lr': 1e-3})
-    svi = SVI(advi.model, advi.guide, adam, loss="ELBO", enum_discrete=True, max_iarange_nesting=1)
+    svi = SVI(model, guide, adam, loss="ELBO", enum_discrete=True, max_iarange_nesting=1)
     for i in range(100):
         loss = svi.step(*args)
         print('loss=', loss)
         if i % 10 == 9:
-            d = advi.parts[0].median()
+            d = guide.parts[0].median()
             print({k: d[k].sum() / 200 for k in ["mu", "theta", "sigma"]})
 
 
